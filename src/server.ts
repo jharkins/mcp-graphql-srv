@@ -11,6 +11,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { parse } from "graphql/language";
 import { introspectEndpoint, introspectLocalSchema } from "./introspection.js";
+import { refreshSchema, semanticSearch } from "./rag.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -28,11 +29,15 @@ const EnvSchema = z.object({
 	HEADERS: z
 		.string()
 		.default("{}")
-		.transform((val) => {
+		.transform((val, ctx) => {
 			try {
 				return JSON.parse(val);
-			} catch (e) {
-				throw new Error("HEADERS must be a valid JSON string");
+			} catch (e: any) {
+				ctx.addIssue({
+					code: z.ZodIssueCode.custom,
+					message: `HEADERS must be a valid JSON string: ${e.message}`,
+				});
+				return z.NEVER;
 			}
 		}),
 	SCHEMA: z.string().optional(),
@@ -92,78 +97,87 @@ function authenticateApiKey(req: Request, res: Response, next: NextFunction) {
 }
 
 /* ---------------------------------------------------------------------------
+ * RAG Initialization (Run Once on Startup)
+ * ------------------------------------------------------------------------- */
+async function initializeVectorStore() {
+    console.log("[RAG] Initializing vector store...");
+    let schemaSDL: string;
+    try {
+        if (env.SCHEMA) {
+            console.log(`[RAG] Loading schema from local file: ${env.SCHEMA}`);
+            schemaSDL = await introspectLocalSchema(env.SCHEMA);
+        } else {
+            console.log(`[RAG] Introspecting schema from remote endpoint: ${env.ENDPOINT}`);
+            schemaSDL = await introspectEndpoint(env.ENDPOINT, env.HEADERS);
+        }
+        console.log(`[RAG] Schema loaded successfully, refreshing vector store...`);
+        await refreshSchema(schemaSDL);
+        console.log("[RAG] Vector store initialization complete.");
+    } catch (error: any) {
+        console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+        console.error("[RAG] FATAL: Failed to initialize vector store:", error.message);
+        console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+        // Depending on criticality, you might want to exit
+        // process.exit(1);
+    }
+}
+
+/* ---------------------------------------------------------------------------
  * 1.  Build the MCP server instance
  * ------------------------------------------------------------------------- */
-async function buildMcpServer(): Promise<McpServer> { // Changed to async
+async function buildMcpServer(): Promise<McpServer> {
   console.log("[Server] Building new McpServer instance for a connection");
-  const version = await getVersion(); // Await the version
+  const version = await getVersion();
   const server = new McpServer({
     name: env.NAME,
     version: version,
     description: `GraphQL MCP server for ${env.ENDPOINT}`,
   });
 
-  // ── Resource: graphql-schema ─────────────────────────────────────────────
-  server.resource("graphql-schema", new URL(env.ENDPOINT).href, async (uri) => {
-    console.log(`[Server] Handling resource request: graphql-schema for uri='${uri}'`);
-    try {
-      let schema: string;
-      if (env.SCHEMA) {
-        console.log(`[Server] Introspecting local schema file: ${env.SCHEMA}`);
-        schema = await introspectLocalSchema(env.SCHEMA);
-      } else {
-        console.log(`[Server] Introspecting remote endpoint: ${env.ENDPOINT}`);
-        schema = await introspectEndpoint(env.ENDPOINT, env.HEADERS);
-      }
+  // Remove the on-demand graphql-schema resource, rely on RAG store
+  // server.resource("graphql-schema", ...);
 
-      return {
-        contents: [
-          {
-            uri: uri.href,
-            text: schema,
-          },
-        ],
-      };
-    } catch (error: any) {
-      console.error("[Server] Error getting GraphQL schema resource:", error);
-      // Re-throw to let the MCP SDK handle resource errors
-      throw new Error(`Failed to get GraphQL schema: ${error.message}`);
-    }
-  });
-
-  // ── Tool: introspect-schema ──────────────────────────────────────────────
+  // ── Tool: introspect-schema (Now uses RAG) ───────────────────────────────
   server.tool(
     "introspect-schema",
-    "Introspect the GraphQL schema. Use this tool before querying if you don't have the schema available as a resource.",
-    {},
-    async () => {
-      console.log(`[Server] Handling tool call: introspect-schema`);
+    "Retrieve relevant parts of the GraphQL schema using semantic search. Ask specific questions about types, fields, queries, or mutations.",
+    {
+      // Changed schema: Now expects a question for semantic search
+      question: z.string().describe("Your question about the GraphQL schema (e.g., 'What fields are on the User type?', 'How to query for organizations?')"),
+      k: z.number().optional().default(5).describe("Number of relevant schema chunks to retrieve (default: 5)"),
+    },
+    async ({ question, k }) => {
+      console.log(`[Server] Handling tool call: introspect-schema with query: "${question}" (k=${k})`);
       try {
-        let schema: string;
-        if (env.SCHEMA) {
-          console.log(`[Server] Introspecting local schema file: ${env.SCHEMA}`);
-          schema = await introspectLocalSchema(env.SCHEMA);
-        } else {
-          console.log(`[Server] Introspecting remote endpoint: ${env.ENDPOINT}`);
-          schema = await introspectEndpoint(env.ENDPOINT, env.HEADERS);
+        const searchResults = await semanticSearch(question, k);
+        if (searchResults.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "No relevant schema information found for your question.",
+              },
+            ],
+          };
         }
-
+        // Combine results into a single text block
+        const combinedText = searchResults.join("\n\n---\n\n");
         return {
           content: [
             {
               type: "text",
-              text: schema,
+              text: combinedText,
             },
           ],
         };
       } catch (error: any) {
-        console.error("[Server] Error in introspect-schema tool:", error);
+        console.error("[Server] Error in introspect-schema tool (RAG search):", error);
         return {
           isError: true,
           content: [
             {
               type: "text",
-              text: `Failed to introspect schema: ${error.message}`,
+              text: `Failed to search schema: ${error.message}`,
             },
           ],
         };
@@ -171,7 +185,7 @@ async function buildMcpServer(): Promise<McpServer> { // Changed to async
     },
   );
 
-  // ── Tool: query-graphql ──────────────────────────────────────────────────
+  // ── Tool: query-graphql (Unchanged) ──────────────────────────────────────
   server.tool(
     "query-graphql",
     "Query a GraphQL endpoint with the given query and optional variables.",
@@ -248,7 +262,7 @@ async function buildMcpServer(): Promise<McpServer> { // Changed to async
           }),
         });
 
-        const responseText = await response.text(); // Read text first for better error reporting
+        const responseText = await response.text();
 
         if (!response.ok) {
           console.error(`[Server] GraphQL request failed: ${response.status} ${response.statusText}`, responseText);
@@ -263,24 +277,24 @@ async function buildMcpServer(): Promise<McpServer> { // Changed to async
           };
         }
 
-        // Attempt to parse JSON, handle potential errors
+        // Harden JSON parsing
         let data;
         try {
           data = JSON.parse(responseText);
-        } catch (error: any) {
-            console.error("[Server] Failed to parse GraphQL JSON response:", error, responseText);
-            return {
-                isError: true,
-                content: [
-                    {
-                        type: "text",
-                        text: `Failed to parse GraphQL JSON response: ${error.message}\nResponse Body:\n${responseText}`,
-                    },
-                ],
-            };
+        } catch (parseError: any) {
+          console.error("[Server] Failed to parse GraphQL JSON response:", parseError, responseText);
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `Failed to parse GraphQL JSON response: ${parseError.message}\nResponse Body Hint:\n${responseText.substring(0, 200)}...`,
+              },
+            ],
+          };
         }
 
-        // Check for GraphQL-level errors in the response
+        // Check for GraphQL-level errors in the now successfully parsed response
         if (data.errors && data.errors.length > 0) {
           console.warn("[Server] GraphQL response contained errors:", data.errors);
           return {
@@ -304,17 +318,16 @@ async function buildMcpServer(): Promise<McpServer> { // Changed to async
             },
           ],
         };
-      } catch (error: any) {
-        console.error("[Server] Failed to execute GraphQL query:", error);
-        // Use isError for fetch/network level errors
+      } catch (fetchError: any) {
+        console.error("[Server] Failed to execute GraphQL query (network/fetch issue?):", fetchError);
         return {
-            isError: true,
-            content: [
-                {
-                    type: "text",
-                    text: `Failed to execute GraphQL query: ${error.message}`,
-                },
-            ],
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Failed to execute GraphQL query: ${fetchError.message}`,
+            },
+          ],
         };
       }
     },
@@ -349,14 +362,33 @@ app.all("/mcp", async (req: Request, res: Response) => {
     transport = streamableTransports[sessionId];
   } else if (!sessionId && isInitializeRequest(req.body)) {
     console.log("[Server] Creating new Streamable HTTP transport");
+    let sessionTimeoutHandle: NodeJS.Timeout | null = null;
+
     transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: id => { streamableTransports[id] = transport; console.log(`[Server] Streamable HTTP session initialized: ${id}`); }
+      onsessioninitialized: id => {
+          streamableTransports[id] = transport;
+          console.log(`[Server] Streamable HTTP session initialized: ${id}`);
+
+          const timeoutMs = 1000 * 60 * 60; // 1 hour
+          console.log(`[Server] Setting idle timeout for session ${id}: ${timeoutMs / 1000 / 60} minutes`);
+          sessionTimeoutHandle = setTimeout(() => {
+              console.warn(`[Server] Cleaning up idle Streamable HTTP session: ${id}`);
+              delete streamableTransports[id];
+              try {
+                  transport.close();
+              } catch (e) { /* Ignore errors if already closed */ }
+          }, timeoutMs);
+      }
     });
 
     transport.onclose = () => {
       if (transport.sessionId) {
           console.log(`[Server] Streamable HTTP transport closed for session: ${transport.sessionId}`);
+          if (sessionTimeoutHandle) {
+              clearTimeout(sessionTimeoutHandle);
+              console.log(`[Server] Cleared idle timeout for session ${transport.sessionId}`);
+          }
           delete streamableTransports[transport.sessionId];
       }
     };
@@ -410,23 +442,45 @@ app.post("/messages", async (req: Request, res: Response) => {
  * 4.  Startup
  * ------------------------------------------------------------------------- */
 const PORT = Number(process.env.PORT ?? 3000);
-const serverInstance = app.listen(PORT, () => {
-  console.log(`MCP GraphQL server '${env.NAME}' targeting endpoint ${env.ENDPOINT} listening on http://localhost:${PORT}`);
-  console.log(`Allow mutations: ${env.ALLOW_MUTATIONS}`);
-  if (env.MCP_API_KEY) {
-      console.log(`API Key Authentication: ENABLED (expecting X-API-Key header)`);
-  } else {
-      console.log("API Key Authentication: DISABLED");
-  }
-  if (env.SCHEMA) {
-    console.log(`Using local schema: ${env.SCHEMA}`);
-  }
-  if (Object.keys(env.HEADERS).length > 0) {
-    console.log(`Using custom headers for GraphQL endpoint: ${JSON.stringify(env.HEADERS)}`); // Clarified header purpose
-  }
-});
+let serverInstance: ReturnType<typeof app.listen> | null = null;
 
-serverInstance.on('error', (error) => {
-  console.error("Server listening error:", error);
-  process.exit(1); // Exit if listening fails critically
+(async () => {
+    await initializeVectorStore();
+
+    serverInstance = app.listen(PORT, () => {
+      console.log(`MCP GraphQL server '${env.NAME}' targeting endpoint ${env.ENDPOINT} listening on http://localhost:${PORT}`);
+      console.log(`Allow mutations: ${env.ALLOW_MUTATIONS}`);
+      if (env.MCP_API_KEY) {
+          console.log(`API Key Authentication: ENABLED (expecting X-API-Key header)`);
+      } else {
+          console.log("API Key Authentication: DISABLED");
+      }
+      if (env.SCHEMA) {
+        console.log(`RAG Schema Source: Local file (${env.SCHEMA})`);
+      } else {
+        console.log(`RAG Schema Source: Remote endpoint (${env.ENDPOINT})`);
+      }
+      if (Object.keys(env.HEADERS).length > 0) {
+        console.log(`Using custom headers for GraphQL endpoint: ${JSON.stringify(env.HEADERS)}`);
+      }
+    });
+
+    serverInstance.on('error', (error) => {
+      console.error("Server listening error:", error);
+      process.exit(1);
+    });
+
+})();
+
+// Graceful Shutdown Handler
+process.on("SIGTERM", () => {
+    console.log("[Server] SIGTERM signal received: closing HTTP server");
+    if (serverInstance) {
+        serverInstance.close(() => {
+            console.log("[Server] HTTP server closed");
+            process.exit(0);
+        });
+    } else {
+        process.exit(1);
+    }
 });
