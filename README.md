@@ -10,7 +10,7 @@ Exposes a target GraphQL endpoint via MCP, providing:
 
 *   An **internal vector store** containing embeddings of the target GraphQL schema for semantic search.
 *   MCP Tools:
-    *   **`introspect-schema`**: Performs semantic search over the embedded schema based on a natural language question.
+    *   **`search-schema`**: Performs semantic search over the embedded schema based on a natural language question.
     *   **`query-graphql`**: Executes a given GraphQL query or mutation against the target endpoint.
 
 ## Prerequisites
@@ -128,13 +128,13 @@ A simple test client script (`src/client.ts`) demonstrates interaction.
     ```
 
 The client will connect to the specified (or default) server URL, list tools, and call them. Note:
-*   The `introspect-schema` tool now expects a natural language question (e.g., `{ question: "What fields are on the User type?" }`) and performs semantic search.
-*   The sample client code may need adjustments to reflect this new input format for `introspect-schema`.
+*   The **`search-schema`** tool now expects a natural language question (e.g., `{ question: "What fields are on the User type?" }`) and performs semantic search.
+*   The sample client code may need adjustments to reflect this new input format for **`search-schema`**.
 *   The client does not currently send `X-API-Key` if `MCP_API_KEY` is configured on the server.
 
 ## Tool Details
 
-### `introspect-schema`
+### `search-schema`
 
 Performs semantic search over the embedded GraphQL schema based on a natural language question.
 

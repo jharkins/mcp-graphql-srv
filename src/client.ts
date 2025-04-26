@@ -41,27 +41,26 @@ async function main() {
     const toolsResponse = await client.listTools();
     console.log("[Client] List Tools Response:", JSON.stringify(toolsResponse, null, 2));
 
-    // Check if the expected tools are listed - access the nested 'tools' property
     const toolsList = (toolsResponse as any)?.tools;
     if (!Array.isArray(toolsList)) {
         console.error("[Client] Error: Could not find tools array in listTools response.", toolsList);
         return;
     }
 
-    const toolNames = toolsList.map((t: any) => t.name); // Map over the nested array
-    if (!toolNames.includes("introspect-schema") || !toolNames.includes("query-graphql")) {
-        console.error("[Client] Error: Expected GraphQL tools not found. Available:", toolNames);
-        return; // Exit if tools aren't there
+    const toolNames = toolsList.map((t: any) => t.name);
+    if (!toolNames.includes("search-schema") || !toolNames.includes("query-graphql")) {
+        console.error("[Client] Error: Expected tools (search-schema, query-graphql) not found. Available:", toolNames);
+        return;
     }
 
     console.log("\n--- Testing GraphQL Tools ---");
 
-    // 1. Test introspection (Now uses RAG semantic search)
-    const schemaQuestion = "What queries are available in the schema?"; // Example question
-    const kResults = 3; // Ask for 3 chunks
-    console.log(`\n[Client] Calling introspect-schema with question: "${schemaQuestion}" (k=${kResults})...`);
+    // 1. Test schema search (Formerly introspection)
+    const schemaQuestion = "What queries are available in the schema?";
+    const kResults = 3;
+    console.log(`\n[Client] Calling search-schema with question: "${schemaQuestion}" (k=${kResults})...`);
     let result = await client.callTool({
-        name: "introspect-schema",
+        name: "search-schema",
         arguments: { question: schemaQuestion, k: kResults }
     });
     console.log("[Client] Semantic Schema Search Result (isError:", result.isError ?? false, "):\n", getResultText(result));

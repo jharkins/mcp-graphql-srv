@@ -137,17 +137,16 @@ async function buildMcpServer(): Promise<McpServer> {
   // Remove the on-demand graphql-schema resource, rely on RAG store
   // server.resource("graphql-schema", ...);
 
-  // ── Tool: introspect-schema (Now uses RAG) ───────────────────────────────
+  // ── Tool: search-schema (Formerly introspect-schema, uses RAG) ──────────
   server.tool(
-    "introspect-schema",
+    "search-schema",
     "Retrieve relevant parts of the GraphQL schema using semantic search. Ask specific questions about types, fields, queries, or mutations.",
     {
-      // Changed schema: Now expects a question for semantic search
       question: z.string().describe("Your question about the GraphQL schema (e.g., 'What fields are on the User type?', 'How to query for organizations?')"),
       k: z.number().optional().default(5).describe("Number of relevant schema chunks to retrieve (default: 5)"),
     },
     async ({ question, k }) => {
-      console.log(`[Server] Handling tool call: introspect-schema with query: "${question}" (k=${k})`);
+      console.log(`[Server] Handling tool call: search-schema with query: "${question}" (k=${k})`);
       try {
         const searchResults = await semanticSearch(question, k);
         if (searchResults.length === 0) {
@@ -171,7 +170,7 @@ async function buildMcpServer(): Promise<McpServer> {
           ],
         };
       } catch (error: any) {
-        console.error("[Server] Error in introspect-schema tool (RAG search):", error);
+        console.error("[Server] Error in search-schema tool (RAG search):", error);
         return {
           isError: true,
           content: [
