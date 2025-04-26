@@ -31,7 +31,11 @@ export async function refreshSchema(schemaSDL: string) {
   }
 
   // 2. Embed documents
+  console.log(`[RAG] Starting embedding process for ${docs.length} documents...`);
   const limit = pLimit(3);
+  let embeddedCount = 0;
+  const totalDocs = docs.length;
+
   const vectors = await Promise.all(
     docs.map((docContent: string) => // Added type for docContent
       limit(async () => {
@@ -40,9 +44,11 @@ export async function refreshSchema(schemaSDL: string) {
               model: process.env.EMBED_MODEL ?? "text-embedding-3-small",
               input: docContent
             });
+            embeddedCount++;
+            console.log(`[RAG] Embedded ${embeddedCount}/${totalDocs} documents...`);
             return { chunk: docContent, vec: r.data[0].embedding };
         } catch(embedError) {
-            console.error("[RAG] Error embedding chunk:", embedError);
+            console.error(`[RAG] Error embedding chunk ${embeddedCount + 1}/${totalDocs}:`, embedError);
             return null;
         }
       })
@@ -51,6 +57,7 @@ export async function refreshSchema(schemaSDL: string) {
 
   // Filter out any chunks that failed to embed
   const validVectors = vectors.filter(v => v !== null) as { chunk: string, vec: number[] }[];
+  console.log(`[RAG] Embedding process completed. Successfully embedded ${validVectors.length} documents.`);
 
   // Check if vectors were generated
   if (validVectors.length === 0 || !validVectors[0]?.vec) {
