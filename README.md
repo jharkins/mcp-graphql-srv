@@ -115,12 +115,19 @@ The container will also perform the RAG initialization on startup and supports g
 A simple test client script (`src/client.ts`) demonstrates interaction.
 
 1.  Ensure the server is running and configured.
-2.  Run the client:
+2.  Run the client, optionally providing the server URL:
     ```bash
+    # Specify the server URL if not using the default (http://localhost:3000/sse)
+    export MCP_SERVER_URL="<your_server_sse_endpoint_url>"
+
+    # Run via ts-node
     npx ts-node src/client.ts
+
+    # Or run the compiled version
+    # npx tsc src/client.ts && node dist/client.js
     ```
 
-The client will connect, list tools, and call them. Note:
+The client will connect to the specified (or default) server URL, list tools, and call them. Note:
 *   The `introspect-schema` tool now expects a natural language question (e.g., `{ question: "What fields are on the User type?" }`) and performs semantic search.
 *   The sample client code may need adjustments to reflect this new input format for `introspect-schema`.
 *   The client does not currently send `X-API-Key` if `MCP_API_KEY` is configured on the server.

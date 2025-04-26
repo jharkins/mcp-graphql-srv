@@ -2,8 +2,20 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 // Unused import: StreamableHTTPClientTransport
 // import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"; 
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+
+// Read server URL from environment variable, with a default for local testing
+const serverUrlString = process.env.MCP_SERVER_URL ?? "http://localhost:3000/sse";
+let baseUrl: URL;
+try {
+    baseUrl = new URL(serverUrlString);
+} catch (e) {
+    console.error(`Invalid MCP_SERVER_URL: ${serverUrlString}. Please provide a valid URL.`);
+    process.exit(1);
+}
+
+console.log(`[Client] Target MCP Server URL: ${baseUrl.href}`);
+
 let client: Client|undefined = undefined
-const baseUrl = new URL("http://localhost:3001/sse");
 
 // Helper to safely extract text content from tool result
 function getResultText(result: any): string {
@@ -44,10 +56,15 @@ async function main() {
 
     console.log("\n--- Testing GraphQL Tools ---");
 
-    // 1. Test introspection
-    console.log("\n[Client] Calling introspect-schema...");
-    let result = await client.callTool({ name: "introspect-schema", arguments: {} });
-    console.log("[Client] Introspection Result (isError:", result.isError ?? false, "):\n", getResultText(result).substring(0, 500) + "..."); // Log first 500 chars
+    // 1. Test introspection (Now uses RAG semantic search)
+    const schemaQuestion = "What queries are available in the schema?"; // Example question
+    const kResults = 3; // Ask for 3 chunks
+    console.log(`\n[Client] Calling introspect-schema with question: "${schemaQuestion}" (k=${kResults})...`);
+    let result = await client.callTool({
+        name: "introspect-schema",
+        arguments: { question: schemaQuestion, k: kResults }
+    });
+    console.log("[Client] Semantic Schema Search Result (isError:", result.isError ?? false, "):\n", getResultText(result));
 
     // 2. Test simple query
     const simpleQuery = '{ __typename }';
@@ -119,3 +136,7 @@ main().catch(error => {
   console.error("Client error:", error);
   process.exit(1);
 });
+
+// NOTE: This client does not currently send the X-API-Key header.
+// If the server is configured with MCP_API_KEY, tool calls will likely fail.
+// Use StreamableHTTPClientTransport with custom headers for API key auth.
